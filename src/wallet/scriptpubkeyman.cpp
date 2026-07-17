@@ -98,26 +98,10 @@ bool DecryptPQCKey(const CKeyingMaterial& master_key, const uint256& desc_id, co
 
 std::vector<CPQCPubKey> ExtractP2MRPubkeys(const CScript& script)
 {
-    std::vector<CPQCPubKey> pubkeys;
-    if (auto multi_a = p2mr::MatchMultiA(script)) {
-        pubkeys.reserve(multi_a->keyspans.size());
-        for (const auto& keyspan : multi_a->keyspans) {
-            CPQCPubKey pubkey{keyspan};
-            if (pubkey.IsValid()) {
-                pubkeys.push_back(pubkey);
-            }
-        }
-        return pubkeys;
-    }
-
-    if (script.size() == 34 && script[0] == 32 && script[33] == OP_CHECKSIGPQC) {
-        CPQCPubKey pubkey{std::span<const unsigned char>{script}.subspan(1, CPQCPubKey::SIZE)};
-        if (pubkey.IsValid()) {
-            pubkeys.push_back(pubkey);
-        }
-    }
-
-    return pubkeys;
+    // Enumerate every signable key in the leaf (pk()/multi_a *and* non-template leaves such as
+    // HTLCs), so the wallet offers its keys for arbitrary p2mr script-path inputs it is asked to
+    // sign via PSBT. See p2mr::ExtractSignableKeys().
+    return p2mr::ExtractSignableKeys(script);
 }
 
 namespace {

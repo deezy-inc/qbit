@@ -9,6 +9,7 @@
 #include <script/script.h>
 #include <script/scriptnum_parsing.h>
 
+#include <algorithm>
 #include <optional>
 #include <span>
 #include <vector>
@@ -67,6 +68,35 @@ inline std::optional<MultiAScriptData> MatchMultiA(const CScript& script)
     if (!threshold) return {};
 
     return MultiAScriptData{*threshold, std::move(keyspans)};
+}
+
+// Enumerate every distinct pubkey occupying a CHECKSIGPQC / CHECKSIGADD position in a p2mr leaf.
+// This is a superset of MatchPK()/MatchMultiA(): it also covers non-template leaves (e.g. HTLCs),
+// so both the wallet (choosing which held keys to offer for signing) and the signer (producing
+// partial script-path signatures) can act on arbitrary leaves -- mirroring how Bitcoin Core signs
+// arbitrary tapscript. Templates are still matched exactly by MatchPK()/MatchMultiA() for
+// *finalisation*; this helper only locates signable keys.
+inline std::vector<CPQCPubKey> ExtractSignableKeys(const CScript& script)
+{
+    std::vector<CPQCPubKey> pubkeys;
+    CScript::const_iterator it{script.begin()};
+    opcodetype opcode;
+    std::vector<unsigned char> push_data;
+    std::vector<unsigned char> last_push;
+    bool have_last_push{false};
+    while (it != script.end()) {
+        if (!script.GetOp(it, opcode, push_data)) return {}; // malformed: enumerate nothing
+        if ((opcode == OP_CHECKSIGPQC || opcode == OP_CHECKSIGADD) && have_last_push &&
+            last_push.size() == CPQCPubKey::SIZE) {
+            CPQCPubKey pubkey{std::span<const unsigned char>(last_push)};
+            if (pubkey.IsValid() && std::find(pubkeys.begin(), pubkeys.end(), pubkey) == pubkeys.end()) {
+                pubkeys.push_back(pubkey);
+            }
+        }
+        have_last_push = (opcode <= OP_PUSHDATA4 && !push_data.empty());
+        if (have_last_push) last_push = push_data;
+    }
+    return pubkeys;
 }
 
 } // namespace p2mr

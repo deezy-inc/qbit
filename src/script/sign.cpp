@@ -497,6 +497,7 @@ struct P2MRScriptSigningPlan {
     int missing_signatures{0};
     int new_signatures{0};
     bool complete{false};
+    bool finalizable{true};
     size_t witness_size{0};
 };
 
@@ -507,7 +508,14 @@ static bool BuildP2MRScriptSigningPlan(const SigningProvider& provider, const Ba
 
     std::vector<CPQCPubKey> pubkeys;
     int threshold{0};
-    if (!ParseP2MRScript(script_bytes, pubkeys, threshold)) return false;
+    bool finalizable{true};
+    if (!ParseP2MRScript(script_bytes, pubkeys, threshold)) {
+        // Not a finalisable template. Enumerate keys anyway so a held key can add a partial
+        // script-path signature for PSBT handoff (e.g. HTLC leaves the node cannot finalise).
+        pubkeys = p2mr::ExtractSignableKeys(CScript(script_bytes.begin(), script_bytes.end()));
+        if (pubkeys.empty()) return false;
+        finalizable = false;
+    }
     if (static_cast<size_t>(threshold) > P2MR_V1_MAX_STANDARD_SIGNATURES) return false;
 
     const uint256 leaf_hash = ComputeP2MRLeafHash(leaf_version, script_bytes);
@@ -536,7 +544,12 @@ static bool BuildP2MRScriptSigningPlan(const SigningProvider& provider, const Ba
             ++num_candidates;
         }
     }
-    if (num_candidates < threshold) {
+    if (!finalizable) {
+        // Non-template leaf: contribute a partial signature for every key we hold and never claim
+        // the leaf is finalisable (branch selection / preimages are supplied downstream).
+        if (num_candidates == 0) return false;
+        threshold = num_candidates;
+    } else if (num_candidates < threshold) {
         for (const auto& pubkey : pubkeys) {
             if (LookupValidP2MRScriptSig(sigdata, creator, pubkey, leaf_hash) == nullptr &&
                 !creator.CanCreatePQCSignature(provider, pubkey)) {
@@ -582,7 +595,8 @@ static bool BuildP2MRScriptSigningPlan(const SigningProvider& provider, const Ba
     plan.candidate_pubkeys = std::move(candidate_pubkeys);
     plan.leaf_hash = leaf_hash;
     plan.threshold = threshold;
-    plan.complete = num_candidates >= threshold;
+    plan.finalizable = finalizable;
+    plan.complete = finalizable && num_candidates >= threshold;
     plan.missing_signatures = std::max(0, threshold - num_candidates);
     plan.new_signatures = std::max(0, std::min(threshold, num_candidates) - num_cached_signatures);
     plan.witness_size = GetSerializeSize(estimated_stack);
